@@ -83,13 +83,17 @@ The program will automatically detect this location.
 
 # Implementation Phases
 
-## Phase 1: Frame Capture Test (Current)
+## Phase 1: Frame Capture Test ✅ Complete
 
-The first phase is a simple test program to verify we can:
+The first phase verified we can:
 1. Start the TM display with shared memory
 2. Read frames from shared memory
 3. Save frames as PNG images locally
 
-See [phase1-test/README.md](phase1-test/README.md) for details on building and running the test program.
+See [phase1-test/README.md](phase1-test/README.md) for details.
 
-Once Phase 1 is verified (frames are captured correctly), we can proceed to Phase 2 (streaming to web browsers).
+## Phase 2: MJPEG Streaming Server (Current)
+
+The second phase implements an HTTP server that streams Tournament Manager display frames to web browsers using MJPEG.
+
+See [phase2-server/README.md](phase2-server/README.md) for details on building and running the streaming server.
