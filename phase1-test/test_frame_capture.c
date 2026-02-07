@@ -100,13 +100,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // 1. Generate unique shared memory name
-    char shmem[10];
-    srand((unsigned int)time(NULL));
-    for(int i = 0; i < 8; i++) {
-        shmem[i] = (char)((rand() % 26) + 'a');
-    }
-    shmem[8] = '\0';
+    // 1. Use fixed shared memory name
+    const char* shmem = "tm-remote-display";
     info("Using shared memory name: %s", shmem);
 
     // 2. Build TM Display command arguments
