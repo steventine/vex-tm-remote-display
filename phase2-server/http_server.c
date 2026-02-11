@@ -1,14 +1,22 @@
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <time.h>
+#else
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define close closesocket
+#define read(s, b, n) recv(s, b, n, 0)
+#define write(s, b, n) send(s, (const char*)(b), n, 0)
+#endif
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <errno.h>
-#include <time.h>
 #include "http_server.h"
 #include "simple-log.h"
 
@@ -39,9 +47,15 @@ static const char* html_page =
 ".controls.visible { opacity: 1; pointer-events: auto; }\n"
 ".btn { background: rgba(0,0,0,0.6); color: #fff; border: 2px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 0.75rem 1rem; font-size: 1.5rem; cursor: pointer; transition: all 0.2s; backdrop-filter: blur(4px); }\n"
 ".btn:hover { background: rgba(0,0,0,0.8); border-color: rgba(255,255,255,0.5); }\n"
-".fps { position: absolute; bottom: 1rem; left: 1rem; z-index: 5; background: rgba(0,0,0,0.6); color: #fff; padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.9rem; font-weight: 600; font-family: monospace; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.2); transition: opacity 0.3s; }\n"
-".fps.hidden { opacity: 0; pointer-events: none; }\n"
-".fps.visible { opacity: 1; pointer-events: auto; }\n"
+".fps { position: absolute; bottom: 1rem; left: 1rem; z-index: 5; background: rgba(0,0,0,0.75); color: #fff; padding: 0.6rem 1rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; font-family: 'Courier New', monospace; backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.25); transition: all 0.3s; box-shadow: 0 2px 8px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 0.2rem; min-width: 120px; }\n"
+".fps.hidden { opacity: 0; pointer-events: none; transform: translateY(10px); }\n"
+".fps.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }\n"
+".fps-value { font-size: 1.1rem; font-weight: 700; line-height: 1.2; }\n"
+".fps-value.good { color: #4ade80; }\n"
+".fps-value.medium { color: #fbbf24; }\n"
+".fps-value.poor { color: #f87171; }\n"
+".fps-label { font-size: 0.7rem; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.5px; }\n"
+".fps-stats { font-size: 0.7rem; opacity: 0.7; margin-top: 0.2rem; padding-top: 0.3rem; border-top: 1px solid rgba(255,255,255,0.1); }\n"
 "</style>\n"
 "</head>\n"
 "<body>\n"
@@ -50,28 +64,115 @@ static const char* html_page =
 "<div class=\"controls hidden\" id=\"controls\">\n"
 "<button class=\"btn\" id=\"fullscreen\" title=\"Toggle Fullscreen\">⤢</button>\n"
 "</div>\n"
-"<div class=\"fps hidden\" id=\"fps\">0.0 FPS</div>\n"
+"<div class=\"fps hidden\" id=\"fps\">\n"
+"  <div class=\"fps-label\">Frame Rate</div>\n"
+"  <div class=\"fps-value\" id=\"fps-value\">0.0</div>\n"
+"  <div class=\"fps-stats\" id=\"fps-stats\">Frames: 0</div>\n"
+"</div>\n"
 "</div>\n"
 "<script>\n"
-"let showControls = false, showCursor = true, lastFrameTime = 0, frameCount = 0, fps = 0;\n"
+"let showControls = false, showCursor = true, lastFrameTime = 0, frameCount = 0;\n"
+"let fpsHistory = [];\n"
+"let lastImageSrc = '';\n"
+"let frameCheckInterval = null;\n"
+"const MAX_HISTORY = 30;\n"
 "const container = document.getElementById('container');\n"
 "const controls = document.getElementById('controls');\n"
 "const fpsDiv = document.getElementById('fps');\n"
+"const fpsValue = document.getElementById('fps-value');\n"
+"const fpsStats = document.getElementById('fps-stats');\n"
 "const stream = document.getElementById('stream');\n"
 "const fullscreenBtn = document.getElementById('fullscreen');\n"
 "\n"
 "function updateFPS() {\n"
 "  const now = Date.now();\n"
+"  \n"
+"  // Always increment frame count\n"
+"  frameCount++;\n"
+"  \n"
+"  // Calculate FPS based on time difference\n"
 "  if (lastFrameTime > 0) {\n"
-"    const dt = (now - lastFrameTime) / 1000;\n"
-"    if (dt > 0) fps = 1 / dt;\n"
+"    const dt = (now - lastFrameTime) / 1000; // Convert to seconds\n"
+"    if (dt > 0 && dt < 10) { // Sanity check: ignore gaps > 10 seconds\n"
+"      const instantFps = 1 / dt;\n"
+"      if (instantFps > 0 && instantFps < 100) { // Sanity check: reasonable FPS range\n"
+"        fpsHistory.push(instantFps);\n"
+"        if (fpsHistory.length > MAX_HISTORY) {\n"
+"          fpsHistory.shift();\n"
+"        }\n"
+"      }\n"
+"    }\n"
+"  } else {\n"
+"    // First frame - initialize\n"
+"    lastFrameTime = now;\n"
+"    return; // Don't calculate FPS on first frame\n"
 "  }\n"
+"  \n"
 "  lastFrameTime = now;\n"
-"  fpsDiv.textContent = fps.toFixed(1) + ' FPS';\n"
+"  \n"
+"  // Calculate smoothed FPS (average of last N frames)\n"
+"  let avgFps = 0;\n"
+"  if (fpsHistory.length > 0) {\n"
+"    const sum = fpsHistory.reduce((a, b) => a + b, 0);\n"
+"    avgFps = sum / fpsHistory.length;\n"
+"  }\n"
+"  \n"
+"  // Update display\n"
+"  fpsValue.textContent = avgFps.toFixed(1);\n"
+"  fpsStats.textContent = 'Frames: ' + frameCount.toLocaleString();\n"
+"  \n"
+"  // Color coding based on FPS\n"
+"  fpsValue.classList.remove('good', 'medium', 'poor');\n"
+"  if (avgFps >= 8) {\n"
+"    fpsValue.classList.add('good');\n"
+"  } else if (avgFps >= 5) {\n"
+"    fpsValue.classList.add('medium');\n"
+"  } else if (avgFps > 0) {\n"
+"    fpsValue.classList.add('poor');\n"
+"  }\n"
 "}\n"
 "\n"
-"stream.onload = () => { updateFPS(); frameCount++; };\n"
+"// Track frame updates for MJPEG stream\n"
+"// For MJPEG multipart streams, onload should fire for each frame\n"
+"// But we also use a fallback timer to detect if frames are coming in\n"
+"let lastImageUpdate = 0;\n"
+"let consecutiveUpdates = 0;\n"
+"\n"
+"function checkFrameUpdate() {\n"
+"  const now = Date.now();\n"
+"  // Check if image is loaded and valid\n"
+"  if (stream.complete && stream.naturalWidth > 0 && stream.naturalHeight > 0) {\n"
+"    // If image was updated recently (within last 200ms), consider it active\n"
+"    const timeSinceUpdate = now - lastImageUpdate;\n"
+"    \n"
+"    // If we haven't seen an onload event in a while but image is valid,\n"
+"    // it might mean frames are updating but onload isn't firing\n"
+"    // In this case, we estimate FPS based on time since last known update\n"
+"    if (lastFrameTime > 0 && timeSinceUpdate > 200) {\n"
+"      // No update in 200ms - might be stalled, don't count as new frame\n"
+"      return;\n"
+"    }\n"
+"    \n"
+"    // If enough time passed since last frame detection, count it\n"
+"    if (timeSinceUpdate >= 50) { // At least 50ms between detections\n"
+"      updateFPS();\n"
+"      lastImageUpdate = now;\n"
+"      consecutiveUpdates++;\n"
+"    }\n"
+"  }\n"
+"}\n"
+"\n"
+"// Primary method: onload event (should fire for each MJPEG frame)\n"
+"stream.onload = () => { \n"
+"  updateFPS();\n"
+"  lastImageUpdate = Date.now();\n"
+"  consecutiveUpdates++;\n"
+"};\n"
 "stream.onerror = () => { console.error('Stream error'); };\n"
+"\n"
+"// Fallback: periodic check in case onload doesn't fire reliably\n"
+"// Check every 50ms (20 times per second) to catch frame updates\n"
+"frameCheckInterval = setInterval(checkFrameUpdate, 50);\n"
 "\n"
 "document.addEventListener('mousemove', () => {\n"
 "  showControls = true;\n"
@@ -181,7 +282,11 @@ static void* handle_client(void* arg) {
                 jpeg_data = NULL;
             } else {
                 // No frame available, wait a bit
+#ifdef _WIN32
+                Sleep(50); // 50ms
+#else
                 nanosleep(&(struct timespec){.tv_sec = 0, .tv_nsec = 50 * 1000000}, NULL); // 50ms
+#endif
             }
         }
         
@@ -201,7 +306,16 @@ static void* server_thread_func(void* arg) {
     http_server_t* server = (http_server_t*)arg;
     
     struct sockaddr_in server_addr, client_addr;
+#ifdef _WIN32
+    int client_len = sizeof(client_addr);
+    WSADATA wsa;
+    if(WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        error("WSAStartup failed");
+        return NULL;
+    }
+#else
     socklen_t client_len = sizeof(client_addr);
+#endif
     
     server->sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if(server->sockfd < 0) {
@@ -210,7 +324,11 @@ static void* server_thread_func(void* arg) {
     }
     
     int opt = 1;
+#ifdef _WIN32
+    setsockopt(server->sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+#else
     setsockopt(server->sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
     
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;

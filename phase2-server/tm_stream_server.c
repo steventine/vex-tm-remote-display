@@ -1,15 +1,19 @@
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <time.h>
+#else
+#include <windows.h>
+#endif
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <unistd.h>
 #include <errno.h>
 #include <signal.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <fcntl.h>
 #include <pthread.h>
 #include "platform.h"
 #include "simple-log.h"
@@ -109,7 +113,11 @@ static void* frame_capture_thread(void* arg) {
             // The HTTP server will encode it when needed
         } else {
             // No frame, wait a bit
+#ifdef _WIN32
+            Sleep(50); // 50ms
+#else
             nanosleep(&(struct timespec){.tv_sec = 0, .tv_nsec = 50 * 1000000}, NULL); // 50ms
+#endif
         }
     }
     
@@ -250,7 +258,11 @@ int main(int argc, char* argv[]) {
 #endif
     
     // Wait for TM Display to initialize
+#ifdef _WIN32
+    Sleep(3000); // 3 seconds
+#else
     sleep(3);
+#endif
     
     // Open shared memory
     char fb_name[32];
@@ -320,7 +332,11 @@ int main(int argc, char* argv[]) {
     
     // Main loop - wait for shutdown signal
     while(g_running) {
+#ifdef _WIN32
+        Sleep(1000); // 1 second
+#else
         sleep(1);
+#endif
     }
     
     // Cleanup

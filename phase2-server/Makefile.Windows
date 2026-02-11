@@ -1,0 +1,124 @@
+PROJECT := tm_stream_server
+EXE := $(PROJECT).exe
+INSTALLER := VEXTMRemoteDisplayServer-1.0.0-Setup.exe
+
+SRCS = tm_stream_server.c \
+	   http_server.c \
+	   jpeg_encoder.c \
+	   platform-windows.c
+
+# Cross-compiler settings
+CC = x86_64-w64-mingw32-gcc
+STRIP = x86_64-w64-mingw32-strip
+
+# Try to find makensis (works on both Linux and Windows)
+MAKENSIS := $(shell which makensis 2>/dev/null)
+ifeq ($(MAKENSIS),)
+	# Try Windows path
+	MAKENSIS := $(shell which makensis.exe 2>/dev/null)
+endif
+ifeq ($(MAKENSIS),)
+	# Try common Windows installation path
+	MAKENSIS := /mnt/c/Program\ Files\ \(x86\)/NSIS/makensis.exe
+endif
+
+# MinGW-w64 library paths
+# Try MSYS2 path first (if available), then standard cross-compiler path
+MINGW_PREFIX := $(shell if [ -d /mingw64 ]; then echo /mingw64; elif [ -d /usr/x86_64-w64-mingw32 ]; then echo /usr/x86_64-w64-mingw32; else echo /usr; fi)
+
+# Check for libjpeg-turbo first, then fall back to standard libjpeg
+HAS_TURBOJPEG := $(shell test -f $(MINGW_PREFIX)/include/turbojpeg.h 2>/dev/null && echo yes)
+HAS_TURBOJPEG_LIB := $(shell test -f $(MINGW_PREFIX)/lib/libturbojpeg.a -o -f $(MINGW_PREFIX)/lib/libturbojpeg.dll.a 2>/dev/null && echo yes)
+HAS_JPEG := $(shell test -f $(MINGW_PREFIX)/include/jpeglib.h 2>/dev/null && echo yes)
+HAS_JPEG_LIB := $(shell test -f $(MINGW_PREFIX)/lib/libjpeg.a -o -f $(MINGW_PREFIX)/lib/libjpeg.dll.a 2>/dev/null && echo yes)
+
+# Debug output
+$(info [DEBUG] MINGW_PREFIX=$(MINGW_PREFIX))
+$(info [DEBUG] HAS_TURBOJPEG=$(HAS_TURBOJPEG))
+$(info [DEBUG] HAS_TURBOJPEG_LIB=$(HAS_TURBOJPEG_LIB))
+$(info [DEBUG] HAS_JPEG=$(HAS_JPEG))
+$(info [DEBUG] HAS_JPEG_LIB=$(HAS_JPEG_LIB))
+$(info [DEBUG] Checking for turbojpeg.h: $(shell test -f $(MINGW_PREFIX)/include/turbojpeg.h 2>/dev/null && echo found || echo not found))
+$(info [DEBUG] Checking for jpeglib.h: $(shell test -f $(MINGW_PREFIX)/include/jpeglib.h 2>/dev/null && echo found || echo not found))
+$(info [DEBUG] Checking for libturbojpeg: $(shell ls -1 $(MINGW_PREFIX)/lib/libturbojpeg.* 2>/dev/null | head -1 || echo not found))
+$(info [DEBUG] Checking for libjpeg: $(shell ls -1 $(MINGW_PREFIX)/lib/libjpeg.* 2>/dev/null | head -1 || echo not found))
+
+CFLAGS = -m64 -Wall -Wextra -O2 -std=c11 -pthread
+INCLUDES = -I$(MINGW_PREFIX)/include
+LDFLAGS = -L$(MINGW_PREFIX)/lib -lpthread -static-libgcc -lws2_32
+
+# Check if we have libjpeg-turbo or libjpeg
+ifneq ($(HAS_TURBOJPEG),)
+    ifneq ($(HAS_TURBOJPEG_LIB),)
+        CFLAGS += -DHAVE_LIBJPEG_TURBO
+        LDFLAGS += -lturbojpeg
+    else ifneq ($(HAS_JPEG),)
+        ifneq ($(HAS_JPEG_LIB),)
+            LDFLAGS += -ljpeg
+        else
+            $(error libjpeg-turbo headers found but library not found. Install: pacman -S mingw-w64-x86_64-libjpeg-turbo (in MSYS2))
+        endif
+    else
+        $(error libjpeg not found. Install via MSYS2: pacman -S mingw-w64-x86_64-libjpeg-turbo)
+    endif
+else ifneq ($(HAS_JPEG),)
+    ifneq ($(HAS_JPEG_LIB),)
+        LDFLAGS += -ljpeg
+    else
+        $(error libjpeg headers found but library not found. Install: pacman -S mingw-w64-x86_64-libjpeg (in MSYS2))
+    endif
+else
+    $(error libjpeg not found for MinGW-w64. Options: 1) Install MSYS2 and run: pacman -S mingw-w64-x86_64-libjpeg-turbo  2) Download pre-built Windows libraries  3) See README for cross-compilation instructions)
+endif
+
+OBJS = $(SRCS:.c=.o)
+
+.PHONY: all clean installer check-makensis
+
+all: $(EXE)
+
+installer: $(INSTALLER)
+
+$(INSTALLER): $(EXE) installer.nsi
+	@echo ""
+	@echo "#####################################################"
+	@echo "# CREATING $(INSTALLER) INSTALLER EXECUTABLE..."
+	@if [ -z "$(MAKENSIS)" ] || [ ! -f "$(MAKENSIS)" ]; then \
+		echo "ERROR: makensis not found!"; \
+		echo "Please install NSIS:"; \
+		echo "  Linux: sudo apt install nsis"; \
+		echo "  Windows: Download from https://nsis.sourceforge.io/Download"; \
+		exit 1; \
+	fi
+	@echo "Stripping $(EXE)..."
+	@$(STRIP) $(EXE)
+	@echo "Building installer with $(MAKENSIS)..."
+	@$(MAKENSIS) installer.nsi > installer.log 2>&1 || (cat installer.log && exit 1)
+	@echo "Installer created: $(INSTALLER)"
+	@echo "#####################################################"
+	@echo ""
+
+$(EXE): $(OBJS)
+	@echo "Linking $@..."
+	@$(CC) $(OBJS) -o $(EXE) $(LDFLAGS)
+
+.c.o:
+	@echo "Compiling $<..."
+	@$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDES)
+
+check-makensis:
+	@echo "Checking for makensis..."
+	@if [ -z "$(MAKENSIS)" ] || [ ! -f "$(MAKENSIS)" ]; then \
+		echo "ERROR: makensis not found!"; \
+		echo "Please install NSIS:"; \
+		echo "  Linux: sudo apt install nsis"; \
+		echo "  Windows: Download from https://nsis.sourceforge.io/Download"; \
+		exit 1; \
+	else \
+		echo "Found makensis: $(MAKENSIS)"; \
+		$(MAKENSIS) -VERSION; \
+	fi
+
+clean:
+	rm -f $(OBJS) $(EXE) $(INSTALLER) *.out
+

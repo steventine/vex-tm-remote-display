@@ -1,54 +1,64 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=c11 -pthread
-LDFLAGS = -lpthread
-
-# Check for libjpeg-turbo
-TURBOJPEG_CFLAGS = $(shell pkg-config --cflags libturbojpeg 2>/dev/null)
-TURBOJPEG_LDFLAGS = $(shell pkg-config --libs libturbojpeg 2>/dev/null)
-
-ifneq ($(TURBOJPEG_CFLAGS),)
-    CFLAGS += -DHAVE_LIBJPEG_TURBO $(TURBOJPEG_CFLAGS)
-    LDFLAGS += $(TURBOJPEG_LDFLAGS)
-    TURBOJPEG = 1
+# Check if we're cross-compiling for Windows
+ifdef CROSS_COMPILE_WINDOWS
+    include Makefile.Windows
 else
-    # Fall back to standard libjpeg
-    # Check if pkg-config can find it
-    JPEG_LDFLAGS = $(shell pkg-config --libs libjpeg 2>/dev/null)
-    ifneq ($(JPEG_LDFLAGS),)
-        LDFLAGS += $(JPEG_LDFLAGS)
+    # Native build
+    CC = gcc
+    CFLAGS = -Wall -Wextra -O2 -std=c11 -pthread
+    LDFLAGS = -lpthread
+
+    # Check for libjpeg-turbo
+    TURBOJPEG_CFLAGS = $(shell pkg-config --cflags libturbojpeg 2>/dev/null)
+    TURBOJPEG_LDFLAGS = $(shell pkg-config --libs libturbojpeg 2>/dev/null)
+
+    ifneq ($(TURBOJPEG_CFLAGS),)
+        CFLAGS += -DHAVE_LIBJPEG_TURBO $(TURBOJPEG_CFLAGS)
+        LDFLAGS += $(TURBOJPEG_LDFLAGS)
+        TURBOJPEG = 1
     else
-        LDFLAGS += -ljpeg
+        # Fall back to standard libjpeg
+        # Check if pkg-config can find it
+        JPEG_LDFLAGS = $(shell pkg-config --libs libjpeg 2>/dev/null)
+        ifneq ($(JPEG_LDFLAGS),)
+            LDFLAGS += $(JPEG_LDFLAGS)
+        else
+            LDFLAGS += -ljpeg
+        endif
+        TURBOJPEG = 0
     endif
-    TURBOJPEG = 0
+
+    # Platform-specific settings
+    ifeq ($(OS),Windows_NT)
+        PLATFORM_SRC = platform-windows.c
+        EXE = tm_stream_server.exe
+    else
+        PLATFORM_SRC = platform-posix.c
+        LDFLAGS += -lrt
+        EXE = tm_stream_server
+    endif
 endif
 
-# Platform-specific settings
-ifeq ($(OS),Windows_NT)
-    PLATFORM_SRC = platform-windows.c
-    EXE = tm_stream_server.exe
-else
-    PLATFORM_SRC = platform-posix.c
-    LDFLAGS += -lrt
-    EXE = tm_stream_server
-endif
+ifndef CROSS_COMPILE_WINDOWS
+    # Native build rules (only if not cross-compiling)
+    SRCS = tm_stream_server.c http_server.c jpeg_encoder.c $(PLATFORM_SRC)
+    OBJS = $(SRCS:.c=.o)
 
-SRCS = tm_stream_server.c http_server.c jpeg_encoder.c $(PLATFORM_SRC)
-OBJS = $(SRCS:.c=.o)
+    .PHONY: all clean check-deps
 
-.PHONY: all clean check-deps
+    all: $(EXE)
 
-all: $(EXE)
-
-$(EXE): $(OBJS)
+    $(EXE): $(OBJS)
 	$(CC) $(OBJS) -o $(EXE) $(LDFLAGS)
 
-%.o: %.c
+    %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-clean:
+    clean:
 	rm -f $(OBJS) $(EXE)
+endif
 
-check-deps:
+ifndef CROSS_COMPILE_WINDOWS
+    check-deps:
 	@echo "Checking dependencies..."
 	@if pkg-config --exists libturbojpeg 2>/dev/null; then \
 		echo "✓ libjpeg-turbo found"; \
@@ -64,5 +74,6 @@ check-deps:
 		exit 1; \
 	fi
 
-build: check-deps all
+    build: check-deps all
+endif
 
