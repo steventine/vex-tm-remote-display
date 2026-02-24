@@ -55,10 +55,10 @@ h264_encoder_t* h264_encoder_create(int width, int height, int fps,
     param.i_keyint_min       = keyframe_interval;
     param.b_open_gop         = 0;        // closed GOP — required for HLS seekability
     param.i_bframe           = 0;        // baseline: no B-frames
-    param.rc.i_rc_method     = X264_RC_ABR;
-    param.rc.i_bitrate       = bitrate_kbps;
-    param.rc.i_vbv_max_bitrate = bitrate_kbps + bitrate_kbps / 4;
-    param.rc.i_vbv_buffer_size = bitrate_kbps;  // 1-second VBV buffer
+    param.rc.i_rc_method       = X264_RC_ABR;
+    param.rc.i_bitrate         = bitrate_kbps;
+    param.rc.i_vbv_max_bitrate = 0;  // No VBV peak constraint — lets x264 spike
+    param.rc.i_vbv_buffer_size = 0;  // for complex frames (sudden content changes)
     param.i_log_level        = X264_LOG_WARNING;
     param.b_annexb           = 1;        // Annex B start codes (needed for TS muxer)
     param.b_repeat_headers   = 1;        // Include SPS/PPS before every IDR (required for HLS segments)

@@ -92,8 +92,60 @@ The first phase verified we can:
 
 See [phase1-test/README.md](phase1-test/README.md) for details.
 
-## Phase 2: MJPEG Streaming Server (Current)
+## Phase 2: MJPEG Streaming Server ✅ Complete
 
 The second phase implements an HTTP server that streams Tournament Manager display frames to web browsers using MJPEG.
 
 See [phase2-server/README.md](phase2-server/README.md) for details on building and running the streaming server.
+
+## Phase 3: H.264/HLS Streaming Server ✅ Complete
+
+The third phase replaces MJPEG with H.264 over HLS, targeting ~2–5 Mbps (vs 15–25 Mbps for MJPEG) with 2–3 s latency and universal Chrome/Edge/Smartboard compatibility. The server still supports `--mode mjpeg` as a fallback.
+
+See `phase3-hls/` for the implementation.
+
+### Linux dependencies
+
+```bash
+sudo apt install build-essential libx264-dev libjpeg-turbo8-dev
+# fallback if libjpeg-turbo8-dev is unavailable:
+# sudo apt install libjpeg-dev
+```
+
+### Cross-compilation dependency (Windows .exe from Linux)
+
+```bash
+sudo apt install gcc-mingw-w64-x86-64
+```
+
+### Build
+
+```bash
+cd phase3-hls
+make check-deps   # verify libx264 and libjpeg found
+make              # or: make build
+```
+
+### Run
+
+```bash
+cd phase3-hls
+./tm_stream_server [--port 8080] [--framerate 10] [--bitrate 3000] \
+                   [--segment-duration 1] [--mode hls|mjpeg] \
+                   [--server ADDR] [--pw PASSWORD] [--kiosk] [--onlyscreen N]
+# Open http://localhost:8080 — video plays within 2-3 s
+```
+
+### Testing without TM hardware
+
+The `test_inject` tool writes synthetic BGRA frames into the same shared memory that TM uses, so the server can be developed and tested without a TM installation:
+
+```bash
+# Terminal 1 — start server without launching TM
+./tm_stream_server --no-tm --framerate 30
+
+# Terminal 2 — inject synthetic frames
+./test_inject --framerate 30 --pattern colorbars   # SMPTE bars with moving stripe
+./test_inject --framerate 30 --pattern cycle        # solid hue cycle
+./test_inject --framerate 30 --pattern noise        # random pixels (worst-case bitrate)
+```

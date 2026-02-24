@@ -71,6 +71,11 @@ int shm_sem_wait(shm_sem_t sem) {
     return 1;
 }
 
+int shm_sem_timedwait(shm_sem_t sem, int timeout_ms) {
+    DWORD wait = WaitForSingleObject(sem, (DWORD)timeout_ms);
+    return (wait == WAIT_OBJECT_0) ? 0 : 1;
+}
+
 void shm_sem_close(shm_sem_t sem, char* name) {
     CloseHandle(sem);
 }

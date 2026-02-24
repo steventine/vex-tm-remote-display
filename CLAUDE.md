@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This project enables remote display of VEX Tournament Manager (TM) on any web browser over a LAN. A server process starts TM's headless display mode, reads frames via shared memory, and streams them as MJPEG over HTTP. Remote clients just open a browser URL — no plugins required.
+This project enables remote display of VEX Tournament Manager (TM) on any web browser over a LAN. A server process starts TM's headless display mode, reads frames via shared memory, and streams them to browsers. The current default transport is H.264 over HLS (`phase3-hls/`); the original MJPEG implementation is preserved in `phase2-server/` and still available via `--mode mjpeg`.
 
 ## Build Commands
 
@@ -51,47 +51,111 @@ sudo apt install build-essential libjpeg-turbo8-dev  # libjpeg-turbo preferred
 sudo apt install gcc-mingw-w64-x86-64
 ```
 
-### Running the server
+### Phase 3 (H.264/HLS streaming server) — current default
 
 ```bash
-cd phase2-server
-./tm_stream_server [--port 8080] [--framerate 10] [--quality 85] \
+cd phase3-hls
+
+# Linux: check deps then build
+make check-deps
+make
+
+# Cross-compile Windows .exe from Linux
+make CROSS_COMPILE_WINDOWS=1
+```
+
+**Linux dependencies:**
+```bash
+sudo apt install build-essential libx264-dev libjpeg-turbo8-dev
+```
+
+**Running the server:**
+```bash
+cd phase3-hls
+./tm_stream_server [--port 8080] [--framerate 10] [--bitrate 3000] \
+                   [--segment-duration 1] [--mode hls|mjpeg] \
                    [--server ADDR] [--pw PASSWORD] [--kiosk] [--onlyscreen N]
 # Then browse to http://localhost:8080
 ```
 
+**Testing without TM hardware (`test_inject`):**
+```bash
+# Terminal 1
+./tm_stream_server --no-tm --framerate 30
+
+# Terminal 2 — synthetic BGRA frames via shared memory
+./test_inject --framerate 30 --pattern colorbars   # moving stripe
+./test_inject --framerate 30 --pattern cycle        # hue cycle
+./test_inject --framerate 30 --pattern noise        # worst-case compression
+```
+
+### Phase 2 (MJPEG streaming server)
+
+```bash
+cd phase2-server
+make build
+./tm_stream_server [--port 8080] [--framerate 10] [--quality 85] \
+                   [--server ADDR] [--pw PASSWORD] [--kiosk] [--onlyscreen N]
+```
+
+**Linux dependencies:**
+```bash
+sudo apt install build-essential libjpeg-turbo8-dev
+```
+
 ## Architecture
 
-### Data Flow
+### Data Flow (Phase 3 HLS)
 
 ```
-TM.exe / flatpak TM  →  shared memory (BGRA 1920×1080)  →  frame_capture_thread
-                                                                      ↓
-Browser  ←  MJPEG multipart HTTP  ←  http_server  ←  get_jpeg_frame callback
-                                                         (BGRA → JPEG via jpeg_encoder)
+TM / flatpak TM  →  shared memory (BGRA 1920×1080)  →  frame_capture_thread
+                                                               ↓
+                                                      h264_encoder_encode()
+                                                               ↓
+                                                      ts_muxer_write_nal()
+                                                               ↓ (on keyframe)
+Browser  ←  HTTP GET /seg/N.ts  ←  hls_server  ←  hls_server_push_segment()
+         ←  HTTP GET /stream.m3u8
+         ←  HTTP GET /  (embedded HTML + HLS.js)
 ```
 
-### Key Components
+### Key Components (Phase 3)
 
 | File | Purpose |
 |------|---------|
-| `tm_stream_server.c` | Main entry point; spawns TM display, manages shared memory/semaphore lifecycle, wires capture thread to HTTP server |
-| `http_server.[ch]` | Minimal HTTP server that serves MJPEG multipart stream; calls `frame_callback_t` per frame |
-| `jpeg_encoder.[ch]` | BGRA→JPEG wrapper; uses libjpeg-turbo when available (`HAVE_LIBJPEG_TURBO`), falls back to standard libjpeg |
-| `platform.h` | Cross-platform abstraction for shared memory, semaphores, process spawning/kill |
-| `platform-posix.[ch]` | POSIX implementation (Linux/macOS) — uses `shm_open`, POSIX semaphores, `fork`/`execv` |
-| `platform-windows.[ch]` | Windows implementation — uses `CreateFileMapping`, Win32 semaphores, `CreateProcess` |
+| `tm_stream_server.c` | Main entry point; `--mode hls` (default) or `--mode mjpeg`; dual-mode frame capture thread |
+| `hls_server.[ch]` | HTTP server; 5-segment ring buffer; M3U8 playlist; embedded HTML+HLS.js page |
+| `h264_encoder.h` | Interface (mirrors `jpeg_encoder.h`) |
+| `h264_encoder_x264.c` | x264 implementation; baseline profile, zero-delay config |
+| `h264_encoder_avcodec.c` | Stub compiled with `-DHAVE_LIBAVCODEC` |
+| `ts_muxer.h` | Interface |
+| `ts_muxer_custom.c` | Custom MPEG-TS muxer; 188-byte packets, PAT+PMT+PES |
+| `ts_muxer_avformat.c` | Stub compiled with `-DHAVE_LIBAVFORMAT` |
+| `yuv_convert.[ch]` | BT.601 BGRA→YUV420 conversion |
+| `test_inject.c` | Synthetic frame source (colorbars/cycle/noise); uses same shm+sem as TM |
+| `platform.h` | Cross-platform abstraction for shared memory, semaphores, process spawning |
+| `platform-posix.[ch]` | POSIX — `shm_open`, POSIX semaphores, `fork`/`execv`, `sem_timedwait` |
+| `platform-windows.[ch]` | Windows — `CreateFileMapping`, Win32 semaphores, `CreateProcess` |
 | `simple-log.h` | Minimal logging macros (`info()`, `error()`) |
+
+### Frame Capture Thread Design
+
+The capture thread uses two modes to handle active vs. idle sources:
+
+- **Active mode**: `shm_sem_timedwait(sem, 100ms)` — blocks until TM posts. 100 ms is large enough that TM always posts before the timeout at any realistic FPS, keeping the capture thread phase-locked to TM with no independent timer to drift against.
+- **Idle mode**: entered after 100 ms silence. Uses `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` to inject repeated frames at exactly the configured FPS, keeping the HLS stream alive during static content (e.g., Logo View between changes).
+
+Do **not** use `clock_nanosleep` as the sole pacemaker for active content — it creates phase drift against the source that causes periodic frame repeats and visible jitter.
 
 ### Platform Abstraction (`platform.h`)
 
-The abstraction wraps: `shm_fd_open`, `shm_fd_close`, `shm_mmap`, `shm_mmap_close`, `shm_sem_create`, `shm_sem_wait`, `shm_sem_close`, `plat_spawn`, `plat_kill`. Types `shm_file_t`, `shm_sem_t`, `plat_pid_t` differ per platform (defined in the platform-specific headers).
+Wraps: `shm_fd_open/close`, `shm_mmap/close`, `shm_sem_create/wait/timedwait/close`, `plat_spawn`, `plat_kill`. `shm_sem_timedwait(sem, timeout_ms)` was added for the HLS frame capture thread.
 
 ### Shared Memory Convention
 
 - Shared memory name: `tm-remote-display` (hardcoded)
-- POSIX paths: `/tm-remote-display-fb` (framebuffer) and `/tm-remote-display-sem` (semaphore)
-- Windows names: `tm-remote-display-fb` / `tm-remote-display-sem` (no leading slash)
+- POSIX paths: `/tm-remote-display-fb` (framebuffer), `/tm-remote-display-sem` (semaphore)
+- Windows names: same without leading slash
 - Frame format: BGRA, 1920×1080, 4 bytes/pixel (IMG_BUF_SIZE = 1920 × 1080 × 4)
 
 ### TM Display Invocation
@@ -99,8 +163,8 @@ The abstraction wraps: `shm_fd_open`, `shm_fd_close`, `shm_mmap`, `shm_mmap_clos
 - **Linux:** `flatpak run -p com.dwabtech.TM --tmdisplay --shmem tm-remote-display ...`
 - **Windows:** `C:\Program Files (x86)\VEX\Tournament Manager\TM.exe --tmdisplay --shmem tm-remote-display ...`
 
-Relevant TM flags passed through: `--framerate`, `--checkversion 0`, `--preview 0`, `--kiosk`, `--onlyscreen`, `--overlay 0`, `--server`, `--pw`.
+Flags passed through: `--framerate`, `--checkversion 0`, `--preview 0`, `--kiosk`, `--onlyscreen`, `--overlay 0`, `--server`, `--pw`.
 
-### Phase 1 vs Phase 2
+### Phase Relationship
 
-`phase1-test/` is an independent standalone test program that captures frames and writes them as `frame_NNN.png` files. It shares the same platform abstraction pattern and shared-memory approach but has its own copies of the platform and logging headers. `phase2-server/` is the production streaming server.
+`phase1-test/` — standalone frame-capture test, saves PNGs. `phase2-server/` — MJPEG server (untouched reference). `phase3-hls/` — H.264/HLS server (current). Phase 3 copies platform/http/jpeg files from Phase 2 and adds the H.264 pipeline on top.

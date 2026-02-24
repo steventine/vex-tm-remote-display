@@ -148,31 +148,89 @@ static void* frame_capture_thread(void* arg) {
 
     int dbg_frames = 0, dbg_nals = 0, dbg_segs = 0;
 
-    while (g_running) {
-        int got_frame = (shm_sem_wait(state->sem) == 0);
+    // Persistent BGRA frame buffer owned by this thread.
+    // Populated from shared memory whenever TM posts a new frame, then held
+    // so we can re-encode it on subsequent loop iterations when TM is idle
+    // (static content).  This ensures the encoder keeps ticking at the
+    // configured FPS regardless of whether the source image is changing.
+    uint8_t* last_bgra = malloc(IMG_BUF_SIZE);
+    if (!last_bgra) {
+        error("frame_capture_thread: failed to allocate frame buffer");
+        return NULL;
+    }
+    int have_last  = 0;
+    int in_idle    = 0;   // false = blocking on semaphore; true = injecting repeats
 
-        if (!got_frame) {
-            sleep_ms(5);
-            continue;
+    // Precise frame interval in nanoseconds (no integer-division drift).
+    long frame_ns = (state->fps > 0) ? (1000000000L / state->fps) : 100000000L;
+
+#ifndef _WIN32
+    struct timespec idle_tick;  // absolute MONOTONIC deadline for idle injections
+#else
+    int frame_interval_ms = (state->fps > 0) ? (1000 / state->fps) : 100;
+#endif
+
+    while (g_running) {
+        int got_new_frame;
+
+        if (!in_idle) {
+            // ── Active mode ────────────────────────────────────────────────
+            // Block on the semaphore for up to 100 ms.  TM (or test_inject)
+            // running at any realistic FPS always posts within this window for
+            // active content, so we stay perfectly phase-locked to the source
+            // with no independent timer to drift against.
+            // If nothing arrives in 100 ms the source is genuinely idle.
+            got_new_frame = (shm_sem_timedwait(state->sem, 100) == 0);
+
+            if (!got_new_frame && have_last) {
+                // Source went idle — switch to fixed-rate injection
+                in_idle = 1;
+#ifndef _WIN32
+                clock_gettime(CLOCK_MONOTONIC, &idle_tick);
+#endif
+            }
+        } else {
+            // ── Idle mode ──────────────────────────────────────────────────
+            // Inject repeated frames at exactly the configured FPS using a
+            // drift-free absolute timer.  Check the semaphore non-blocking on
+            // every tick; if the source posts again, return to active mode.
+#ifdef _WIN32
+            got_new_frame = (shm_sem_timedwait(state->sem, frame_interval_ms) == 0);
+            if (got_new_frame) in_idle = 0;
+#else
+            idle_tick.tv_nsec += frame_ns;
+            if (idle_tick.tv_nsec >= 1000000000L) {
+                idle_tick.tv_sec++;
+                idle_tick.tv_nsec -= 1000000000L;
+            }
+            while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &idle_tick, NULL) == EINTR)
+                ;
+
+            // Drain any posts that arrived while we slept
+            got_new_frame = 0;
+            while (sem_trywait(state->sem) == 0)
+                got_new_frame = 1;
+            if (got_new_frame) in_idle = 0;
+#endif
         }
+
+        if (got_new_frame) {
+            pthread_mutex_lock(&state->mutex);
+            memcpy(last_bgra, state->imgbuf, IMG_BUF_SIZE);
+            pthread_mutex_unlock(&state->mutex);
+            have_last = 1;
+        }
+
+        if (!have_last)
+            continue;
+
         dbg_frames++;
 
         if (g_mode == MODE_HLS) {
-            // Encode under mutex (imgbuf may be updated by TM at any time)
-            pthread_mutex_lock(&state->mutex);
-            uint8_t* bgra_copy = malloc(IMG_BUF_SIZE);
-            if (bgra_copy) {
-                memcpy(bgra_copy, state->imgbuf, IMG_BUF_SIZE);
-            }
-            pthread_mutex_unlock(&state->mutex);
-
-            if (!bgra_copy) continue;
-
             uint8_t* nal_data    = NULL;
             int      is_keyframe = 0;
-            size_t   nal_size    = h264_encoder_encode(state->h264_enc, bgra_copy,
+            size_t   nal_size    = h264_encoder_encode(state->h264_enc, last_bgra,
                                                         &nal_data, &is_keyframe);
-            free(bgra_copy);
 
             if (nal_size == 0 || !nal_data) {
                 if (dbg_frames <= 15)
@@ -202,6 +260,8 @@ static void* frame_capture_thread(void* arg) {
         }
         // MJPEG mode: HTTP server encodes on demand via get_jpeg_frame callback
     }
+
+    free(last_bgra);
 
     // Flush any remaining HLS segment
     if (g_mode == MODE_HLS && state->ts_mux) {
