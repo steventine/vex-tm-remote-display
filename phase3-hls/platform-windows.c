@@ -27,6 +27,7 @@ shm_file_t shm_fd_open(char* name, size_t len) {
 }
 
 void shm_fd_close(shm_file_t fd, char* name) {
+    (void)name;
     CloseHandle(fd);
 }
 
@@ -46,6 +47,7 @@ uint8_t* shm_mmap(shm_file_t fd, size_t len) {
 }
 
 void shm_mmap_close(uint8_t* mmap, size_t len) {
+    (void)len;
     UnmapViewOfFile(mmap);
 }
 
@@ -77,6 +79,7 @@ int shm_sem_timedwait(shm_sem_t sem, int timeout_ms) {
 }
 
 void shm_sem_close(shm_sem_t sem, char* name) {
+    (void)name;
     CloseHandle(sem);
 }
 
@@ -86,7 +89,7 @@ plat_pid_t plat_spawn(const char* file, char* const args[]) {
 
     // Build command line
     pos += snprintf(cmd + pos, sizeof(cmd) - pos, "\"%s\"", file);
-    for(int i = 0; args[i] != NULL && pos < sizeof(cmd) - 100; i++) {
+    for(int i = 0; args[i] != NULL && (size_t)pos < sizeof(cmd) - 100; i++) {
         pos += snprintf(cmd + pos, sizeof(cmd) - pos, " \"%s\"", args[i]);
     }
 

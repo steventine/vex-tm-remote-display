@@ -161,10 +161,9 @@ static void* frame_capture_thread(void* arg) {
     int have_last  = 0;
     int in_idle    = 0;   // false = blocking on semaphore; true = injecting repeats
 
+#ifndef _WIN32
     // Precise frame interval in nanoseconds (no integer-division drift).
     long frame_ns = (state->fps > 0) ? (1000000000L / state->fps) : 100000000L;
-
-#ifndef _WIN32
     struct timespec idle_tick;  // absolute MONOTONIC deadline for idle injections
 #else
     int frame_interval_ms = (state->fps > 0) ? (1000 / state->fps) : 100;

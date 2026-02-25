@@ -168,3 +168,46 @@ Flags passed through: `--framerate`, `--checkversion 0`, `--preview 0`, `--kiosk
 ### Phase Relationship
 
 `phase1-test/` — standalone frame-capture test, saves PNGs. `phase2-server/` — MJPEG server (untouched reference). `phase3-hls/` — H.264/HLS server (current). Phase 3 copies platform/http/jpeg files from Phase 2 and adds the H.264 pipeline on top.
+
+## Windows Notes
+
+### Running the pre-built exe
+
+`phase3-hls/tm_stream_server.exe` is a statically linked Win64 PE — no DLLs needed, just run it from a Command Prompt or PowerShell:
+
+```bat
+cd phase3-hls
+tm_stream_server.exe [--port 8080] [--framerate 10] [--bitrate 3000] [--no-tm]
+```
+
+TM is auto-detected at `C:\Program Files (x86)\VEX\Tournament Manager\TM.exe`. Use `--no-tm` to skip launching TM (useful for testing).
+
+### Native Windows build (MSYS2)
+
+The `Makefile.Windows` is for cross-compiling **from Linux**. For a native build on Windows, use MSYS2 (MinGW64 shell):
+
+```bash
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-x264 mingw-w64-x86_64-libjpeg-turbo make
+
+cd phase3-hls
+make -f Makefile.Windows \
+  X264_PREFIX=/mingw64 \
+  TURBOJPEG_PREFIX=/mingw64
+```
+
+### test_inject on Windows
+
+`test_inject` is not yet cross-compiled for Windows. Build it natively in MSYS2 with:
+
+```bash
+x86_64-w64-mingw32-gcc -O2 -std=c11 -D_WIN32_WINNT=0x0601 \
+  test_inject.c platform-windows.c -o test_inject.exe \
+  -static -lws2_32 -lpthread -lwinmm
+```
+
+### Windows debugging tips
+
+- Log output goes to stderr; run from a terminal to see it.
+- Shared memory names on Windows have **no leading slash**: `tm-remote-display-fb`, `tm-remote-display-sem`.
+- If TM fails to start, the server logs the full `CreateProcess` command. Check that the TM path exists; use `--server` / `--pw` to match TM's event-partner settings.
+- `--no-tm` mode starts the HTTP server immediately without waiting for TM; pair it with `test_inject.exe` to test end-to-end without TM hardware.
