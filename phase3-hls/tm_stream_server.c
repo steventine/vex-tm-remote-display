@@ -7,6 +7,7 @@
 #include <time.h>
 #else
 #include <windows.h>
+#include <mmsystem.h>   // timeBeginPeriod / timeEndPeriod
 #endif
 
 #include <stdio.h>
@@ -141,6 +142,22 @@ static void sleep_ms(int ms) {
 }
 
 // --------------------------------------------------------------------------
+// Monotonic millisecond clock (for diagnostic timing logs)
+// --------------------------------------------------------------------------
+static uint64_t mono_ms(void) {
+#ifdef _WIN32
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (uint64_t)(now.QuadPart * 1000ULL / (uint64_t)freq.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+#endif
+}
+
+// --------------------------------------------------------------------------
 // Frame capture thread
 // --------------------------------------------------------------------------
 static void* frame_capture_thread(void* arg) {
@@ -148,6 +165,14 @@ static void* frame_capture_thread(void* arg) {
 
     int dbg_frames = 0, dbg_nals = 0, dbg_segs = 0;
     int dbg_timeouts = 0;
+
+    // Wall-clock PTS tracking — makes PTS timestamps reflect actual capture
+    // time rather than a fixed 1/fps increment.  This adapts to whatever rate
+    // TM actually delivers frames (which may differ from --framerate due to
+    // platform timer granularity) so segments play at the correct speed and
+    // their EXTINF durations match the real wall-clock interval.
+    uint64_t capture_start_ms = 0;  // set on first encoded frame; PTS origin
+    int64_t  seg_start_pts    = -1; // 90kHz PTS of first frame in current segment
 
     // Persistent BGRA frame buffer owned by this thread.
     // Populated from shared memory whenever TM posts a new frame, then held
@@ -167,7 +192,14 @@ static void* frame_capture_thread(void* arg) {
     long frame_ns = (state->fps > 0) ? (1000000000L / state->fps) : 100000000L;
     struct timespec idle_tick;  // absolute MONOTONIC deadline for idle injections
 #else
-    int frame_interval_ms = (state->fps > 0) ? (1000 / state->fps) : 100;
+    // QPC-based absolute-deadline timer for drift-free idle frame injection.
+    // Mirrors the Linux clock_nanosleep(TIMER_ABSTIME) approach.
+    LARGE_INTEGER _qpc_freq, _idle_next;
+    QueryPerformanceFrequency(&_qpc_freq);
+    _idle_next.QuadPart = 0;
+    int64_t _ticks_per_frame = (state->fps > 0)
+        ? (_qpc_freq.QuadPart / (int64_t)state->fps)
+        : (_qpc_freq.QuadPart / 10LL);
 #endif
 
     while (g_running) {
@@ -195,8 +227,12 @@ static void* frame_capture_thread(void* arg) {
             if (!got_new_frame && have_last) {
                 // Source went idle — switch to fixed-rate injection
                 in_idle = 1;
+                info("capture: source idle after frame %d — switching to %d fps injection",
+                     dbg_frames, state->fps);
 #ifndef _WIN32
                 clock_gettime(CLOCK_MONOTONIC, &idle_tick);
+#else
+                QueryPerformanceCounter(&_idle_next);  // baseline; first tick adds one period
 #endif
             }
         } else {
@@ -205,8 +241,40 @@ static void* frame_capture_thread(void* arg) {
             // drift-free absolute timer.  Check the semaphore non-blocking on
             // every tick; if the source posts again, return to active mode.
 #ifdef _WIN32
-            got_new_frame = (shm_sem_timedwait(state->sem, frame_interval_ms) == 0);
-            if (got_new_frame) in_idle = 0;
+            // Advance to the next absolute deadline (drift-free, mirrors Linux idle_tick += frame_ns).
+            _idle_next.QuadPart += _ticks_per_frame;
+            // Wait until that deadline while also watching the semaphore so we
+            // exit idle mode immediately if TM starts posting frames again.
+            got_new_frame = 0;
+            uint64_t _idle_frame_start = mono_ms();
+            for (;;) {
+                LARGE_INTEGER _now;
+                QueryPerformanceCounter(&_now);
+                int64_t remain = _idle_next.QuadPart - _now.QuadPart;
+                if (remain <= 0) break;
+                int ms = (int)(remain * 1000 / _qpc_freq.QuadPart);
+                if (ms <= 1) {
+                    // Sub-1ms left: non-blocking semaphore check then done
+                    if (WaitForSingleObject(state->sem, 0) == WAIT_OBJECT_0)
+                        got_new_frame = 1;
+                    break;
+                }
+                // Sleep most of the remaining interval; loop to re-check absolute time
+                if (WaitForSingleObject(state->sem, (DWORD)(ms - 1)) == WAIT_OBJECT_0) {
+                    got_new_frame = 1;
+                    break;
+                }
+            }
+            if (got_new_frame) {
+                in_idle = 0;
+                info("capture: TM resumed — returning to active mode at frame %d", dbg_frames);
+            } else if (dbg_frames % state->fps == 1) {
+                // Log idle timing once per second
+                uint64_t actual_ms = mono_ms() - _idle_frame_start;
+                int target_ms = 1000 / state->fps;
+                info("capture: idle frame timing — waited %llums (target %dms)",
+                     (unsigned long long)actual_ms, target_ms);
+            }
 #else
             idle_tick.tv_nsec += frame_ns;
             if (idle_tick.tv_nsec >= 1000000000L) {
@@ -248,11 +316,14 @@ static void* frame_capture_thread(void* arg) {
                 continue;
             }
             dbg_nals++;
-            if (dbg_nals <= 5 || is_keyframe)
-                info("frame %d: nal=%zu bytes keyframe=%d", dbg_frames, nal_size, is_keyframe);
 
-            // PTS in 90 kHz units
-            int64_t pts = (int64_t)state->frame_num * 90000 / state->fps;
+            // PTS from actual wall-clock time (90 kHz = 90 ticks per ms).
+            // Using real capture time instead of frame_num/fps makes the
+            // encoder output play at the correct speed regardless of TM's
+            // actual delivery rate.
+            uint64_t _now_ms = mono_ms();
+            if (capture_start_ms == 0) capture_start_ms = _now_ms;
+            int64_t pts = (int64_t)(_now_ms - capture_start_ms) * 90LL;
             state->frame_num++;
 
             uint8_t* seg_data = NULL;
@@ -260,11 +331,33 @@ static void* frame_capture_thread(void* arg) {
             ts_muxer_write_nal(state->ts_mux, nal_data, nal_size,
                                pts, is_keyframe, &seg_data, &seg_size);
 
+            // First keyframe marks the start of the first segment.
+            if (is_keyframe && seg_start_pts < 0)
+                seg_start_pts = pts;
+
             if (seg_data && seg_size > 0) {
                 dbg_segs++;
-                info("segment %d pushed: %zu bytes", dbg_segs, seg_size);
-                double duration = (double)state->segment_duration;
-                hls_server_push_segment(state->hls_srv, seg_data, seg_size, duration);
+                static uint64_t last_seg_ms = 0;
+                uint64_t now_ms2 = mono_ms();
+                // Actual segment duration: from first keyframe PTS to current
+                // keyframe PTS (current keyframe starts the *next* segment).
+                double actual_duration = (seg_start_pts >= 0 && pts > seg_start_pts)
+                    ? (double)(pts - seg_start_pts) / 90000.0
+                    : (double)state->segment_duration;
+                // This keyframe is now the start of the next segment.
+                seg_start_pts = pts;
+
+                if (last_seg_ms == 0) {
+                    info("segment %d pushed: %zu bytes  dur=%.3fs (first)",
+                         dbg_segs, seg_size, actual_duration);
+                } else {
+                    uint64_t interval = now_ms2 - last_seg_ms;
+                    info("segment %d pushed: %zu bytes  dur=%.3fs  interval=%llums  mode=%s",
+                         dbg_segs, seg_size, actual_duration,
+                         (unsigned long long)interval, in_idle ? "idle" : "active");
+                }
+                last_seg_ms = now_ms2;
+                hls_server_push_segment(state->hls_srv, seg_data, seg_size, actual_duration);
                 ts_muxer_free_segment(seg_data);
             }
         }
@@ -350,6 +443,13 @@ int main(int argc, char* argv[]) {
     }
 
     if (framerate <= 0) framerate = 10;
+
+#ifdef _WIN32
+    // Reduce system timer resolution to 1 ms so WaitForSingleObject timeouts are
+    // accurate.  The default ~15.625 ms granularity causes idle-mode frame injection
+    // to fire ±14 ms per frame, making segments arrive late and stalling HLS.js.
+    timeBeginPeriod(1);
+#endif
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
@@ -603,5 +703,8 @@ cleanup_shm:
     free(g_state);
 
     info("Shutdown complete");
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
     return rc;
 }
