@@ -154,8 +154,10 @@ Wraps: `shm_fd_open/close`, `shm_mmap/close`, `shm_sem_create/wait/timedwait/clo
 ### Shared Memory Convention
 
 - Shared memory name: `tm-remote-display` (hardcoded)
-- POSIX paths: `/tm-remote-display-fb` (framebuffer), `/tm-remote-display-sem` (semaphore)
-- Windows names: same without leading slash
+- Object names: `/tm-remote-display-fb` (framebuffer), `/tm-remote-display-sem` (semaphore)
+- The leading slash is used on **both** platforms. On POSIX it maps to `/dev/shm/`; on Windows
+  `CreateFileMapping` accepts the slash as part of the literal object name — this matches what
+  TM creates (confirmed against `vextm-obs-source/vextm-thread.c`).
 - Frame format: BGRA, 1920×1080, 4 bytes/pixel (IMG_BUF_SIZE = 1920 × 1080 × 4)
 
 ### TM Display Invocation
@@ -184,26 +186,26 @@ TM is auto-detected at `C:\Program Files (x86)\VEX\Tournament Manager\TM.exe`. U
 
 ### Native Windows build (MSYS2)
 
-The `Makefile.Windows` is for cross-compiling **from Linux**. For a native build on Windows, use MSYS2 (MinGW64 shell):
+`Makefile.Windows` auto-detects native vs cross-compile based on `$(OS)`. In an **MSYS2 MinGW64** shell:
 
 ```bash
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-x264 mingw-w64-x86_64-libjpeg-turbo make
+# One-time setup
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-x264 \
+          mingw-w64-x86_64-libjpeg-turbo make
 
+# Build (no extra flags needed — Makefile detects MSYS2 automatically)
 cd phase3-hls
-make -f Makefile.Windows \
-  X264_PREFIX=/mingw64 \
-  TURBOJPEG_PREFIX=/mingw64
+make -f Makefile.Windows
+
+# Debug build (symbols, -O0, not stripped — use with gdb or for printf debugging)
+make -f Makefile.Windows debug
 ```
 
 ### test_inject on Windows
 
-`test_inject` is not yet cross-compiled for Windows. Build it natively in MSYS2 with:
-
-```bash
-x86_64-w64-mingw32-gcc -O2 -std=c11 -D_WIN32_WINNT=0x0601 \
-  test_inject.c platform-windows.c -o test_inject.exe \
-  -static -lws2_32 -lpthread -lwinmm
-```
+`test_inject.c` is POSIX-only (`shm_open`, `mmap`, `sem_open`, `nanosleep`) and requires porting
+before it can be built on Windows. Until that work is done, test with real TM or use the Linux
+server to validate the HLS pipeline.
 
 ### Windows debugging tips
 

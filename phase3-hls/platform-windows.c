@@ -19,10 +19,15 @@ shm_file_t shm_fd_open(char* name, size_t len) {
             (DWORD)len,
             name);
     if (fd == NULL) {
-        warn("CreateFileMapping failed: %ld", GetLastError());
+        warn("shm_fd_open: CreateFileMapping('%s') failed: %ld", name, GetLastError());
         return NULL;
     }
-
+    DWORD last_err = GetLastError();
+    if (last_err == ERROR_ALREADY_EXISTS) {
+        info("shm_fd_open: opened EXISTING mapping '%s' (TM created it first — good)", name);
+    } else {
+        warn("shm_fd_open: created NEW mapping '%s' (TM has NOT created it yet)", name);
+    }
     return fd;
 }
 
@@ -58,10 +63,15 @@ shm_sem_t shm_sem_create(char* name) {
             5,
             name);
     if(sem == NULL) {
-        warn("CreateSemaphore failed: %ld", GetLastError());
+        warn("shm_sem_create: CreateSemaphoreA('%s') failed: %ld", name, GetLastError());
         return NULL;
     }
-
+    DWORD last_err = GetLastError();
+    if (last_err == ERROR_ALREADY_EXISTS) {
+        info("shm_sem_create: opened EXISTING semaphore '%s' (TM created it first — good)", name);
+    } else {
+        warn("shm_sem_create: created NEW semaphore '%s' (TM has NOT created it yet)", name);
+    }
     return sem;
 }
 

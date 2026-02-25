@@ -1,18 +1,33 @@
-# Cross-compilation settings for Windows x86-64 using MinGW-w64.
-# Included by Makefile when CROSS_COMPILE_WINDOWS=1 is set.
+# Windows x86-64 build using MinGW-w64.
 #
-# Prerequisites (Debian/Ubuntu):
-#   sudo apt install gcc-mingw-w64-x86-64
-#   # For x264 cross-compiled libs, use MSYS2 on a Windows machine or
-#   # obtain pre-built mingw libs and set X264_PREFIX below.
+# Works in two modes — auto-detected by $(OS):
 #
-# Usage:
-#   make CROSS_COMPILE_WINDOWS=1
-#   make CROSS_COMPILE_WINDOWS=1 installer
+#   1. Native build in MSYS2 MinGW64 shell (OS=Windows_NT):
+#        pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-x264 \
+#                  mingw-w64-x86_64-libjpeg-turbo make
+#        make -f Makefile.Windows
+#        make -f Makefile.Windows debug    # debug build (no strip, -g -O0)
+#
+#   2. Cross-compile from Linux (OS unset):
+#        sudo apt install gcc-mingw-w64-x86-64
+#        make CROSS_COMPILE_WINDOWS=1      # called by parent Makefile
 
-CC      = x86_64-w64-mingw32-gcc
-WINDRES = x86_64-w64-mingw32-windres
-STRIP   = x86_64-w64-mingw32-strip
+# ---------------------------------------------------------------------------
+# Toolchain — native MSYS2 vs Linux cross-compile
+# ---------------------------------------------------------------------------
+ifeq ($(OS),Windows_NT)
+    # Running inside an MSYS2 MinGW64 shell
+    CC      = gcc
+    STRIP   = strip
+    WINDRES = windres
+    DEFAULT_PREFIX = /mingw64
+else
+    # Cross-compiling from Linux
+    CC      = x86_64-w64-mingw32-gcc
+    STRIP   = x86_64-w64-mingw32-strip
+    WINDRES = x86_64-w64-mingw32-windres
+    DEFAULT_PREFIX = /usr/x86_64-w64-mingw32
+endif
 
 CFLAGS  = -Wall -Wextra -O2 -std=c11 -D_WIN32_WINNT=0x0601
 LDFLAGS = -static -lws2_32 -lpthread -lwinmm
@@ -20,10 +35,9 @@ LDFLAGS = -static -lws2_32 -lpthread -lwinmm
 EXE = tm_stream_server.exe
 
 # ---------------------------------------------------------------------------
-# JPEG (for --mode mjpeg): look for libjpeg-turbo in TURBOJPEG_PREFIX
-# or fall back to any system-installed cross-libs.
+# JPEG (for --mode mjpeg)
 # ---------------------------------------------------------------------------
-TURBOJPEG_PREFIX ?= /usr/x86_64-w64-mingw32
+TURBOJPEG_PREFIX ?= $(DEFAULT_PREFIX)
 
 TURBOJPEG_INC = $(TURBOJPEG_PREFIX)/include
 TURBOJPEG_LIB = $(TURBOJPEG_PREFIX)/lib
@@ -39,11 +53,9 @@ else
 endif
 
 # ---------------------------------------------------------------------------
-# x264 (for HLS): look for x264 in X264_PREFIX
-# Install on MSYS2: pacman -S mingw-w64-x86_64-x264
-# Then copy libs/headers to X264_PREFIX or set it to your MSYS2 mingw64 dir.
+# x264 (for HLS)
 # ---------------------------------------------------------------------------
-X264_PREFIX ?= /usr/x86_64-w64-mingw32
+X264_PREFIX ?= $(DEFAULT_PREFIX)
 
 X264_INC = $(X264_PREFIX)/include
 X264_LIB = $(X264_PREFIX)/lib
@@ -53,7 +65,8 @@ ifneq ($(wildcard $(X264_INC)/x264.h),)
     LDFLAGS += -L$(X264_LIB) -lx264
 else
     $(warning x264 headers not found at $(X264_INC)/x264.h)
-    $(warning Set X264_PREFIX to the directory containing include/x264.h)
+    $(warning Install: pacman -S mingw-w64-x86_64-x264  [MSYS2])
+    $(warning     or:  sudo apt install libx264-dev + cross-compiled libs  [Linux])
     LDFLAGS += -lx264
 endif
 
@@ -70,13 +83,22 @@ SRCS = tm_stream_server.c \
 
 OBJS = $(SRCS:.c=.o)
 
-.PHONY: all clean installer
+.PHONY: all debug clean installer
 
 all: $(EXE)
 
+# Debug build: symbols, no optimisation, no strip — easy to use with gdb
+debug: CFLAGS := $(filter-out -O2,$(CFLAGS)) -g -O0
+debug: $(EXE)
+	@echo "Debug build complete (not stripped)"
+
 $(EXE): $(OBJS)
 	$(CC) $(OBJS) -o $(EXE) $(LDFLAGS)
+ifeq ($(MAKECMDGOALS),debug)
+	@echo "Skipping strip for debug build"
+else
 	$(STRIP) $(EXE)
+endif
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

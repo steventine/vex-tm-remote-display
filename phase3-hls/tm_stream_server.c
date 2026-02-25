@@ -147,6 +147,7 @@ static void* frame_capture_thread(void* arg) {
     struct frame_capture_state* state = (struct frame_capture_state*)arg;
 
     int dbg_frames = 0, dbg_nals = 0, dbg_segs = 0;
+    int dbg_timeouts = 0;
 
     // Persistent BGRA frame buffer owned by this thread.
     // Populated from shared memory whenever TM posts a new frame, then held
@@ -180,6 +181,16 @@ static void* frame_capture_thread(void* arg) {
             // with no independent timer to drift against.
             // If nothing arrives in 100 ms the source is genuinely idle.
             got_new_frame = (shm_sem_timedwait(state->sem, 100) == 0);
+
+            if (!got_new_frame) {
+                dbg_timeouts++;
+                // Log at 1s, 5s, 10s, then every 30s — shows the thread is alive
+                if (dbg_timeouts == 10 || dbg_timeouts == 50 ||
+                    dbg_timeouts == 100 || dbg_timeouts % 300 == 0) {
+                    info("capture: no frames yet — %d timeouts (~%.0f s waiting for TM)",
+                         dbg_timeouts, dbg_timeouts * 0.1);
+                }
+            }
 
             if (!got_new_frame && have_last) {
                 // Source went idle — switch to fixed-rate injection
@@ -420,17 +431,65 @@ int main(int argc, char* argv[]) {
 #endif
         // Wait for TM to initialise
         sleep_ms(3000);
+
+#ifdef _WIN32
+        // Check that TM is still alive after the wait
+        {
+            DWORD exit_code = STILL_ACTIVE;
+            GetExitCodeProcess(g_tm_pid, &exit_code);
+            if (exit_code == STILL_ACTIVE) {
+                info("TM Display process is still running after startup wait");
+            } else {
+                warn("TM Display has already exited (exit code: %lu) — it may have crashed or rejected the arguments", exit_code);
+            }
+        }
+
+        // Probe for shared memory under both local and Global\ namespace so we
+        // can detect if TM uses a different name prefix than expected.
+        {
+            const char* fb_probes[] = {
+                "/tm-remote-display-fb",
+                "tm-remote-display-fb",
+                "Global\\tm-remote-display-fb",
+                NULL
+            };
+            const char* sem_probes[] = {
+                "/tm-remote-display-sem",
+                "tm-remote-display-sem",
+                "Global\\tm-remote-display-sem",
+                NULL
+            };
+            info("--- Probing for TM shared memory objects ---");
+            for (int i = 0; fb_probes[i]; i++) {
+                HANDLE h = OpenFileMapping(FILE_MAP_READ, FALSE, fb_probes[i]);
+                if (h) {
+                    info("  FOUND file mapping: '%s'", fb_probes[i]);
+                    CloseHandle(h);
+                } else {
+                    info("  No file mapping: '%s' (err %lu)", fb_probes[i], GetLastError());
+                }
+            }
+            for (int i = 0; sem_probes[i]; i++) {
+                HANDLE h = OpenSemaphore(SEMAPHORE_ALL_ACCESS, FALSE, sem_probes[i]);
+                if (h) {
+                    info("  FOUND semaphore: '%s'", sem_probes[i]);
+                    CloseHandle(h);
+                } else {
+                    info("  No semaphore: '%s' (err %lu)", sem_probes[i], GetLastError());
+                }
+            }
+            info("--- End probe ---");
+        }
+#endif
     }
 
     // Open shared memory
+    // Use the same name format on all platforms.  On Windows, CreateFileMapping
+    // accepts the leading slash as part of the literal object name — this is
+    // what TM creates (confirmed from vextm-obs-source).
     char fb_name[64], sem_name[64];
-#ifdef _WIN32
-    snprintf(fb_name,  sizeof(fb_name),  "%s-fb",  shmem);
-    snprintf(sem_name, sizeof(sem_name), "%s-sem", shmem);
-#else
     snprintf(fb_name,  sizeof(fb_name),  "/%s-fb",  shmem);
     snprintf(sem_name, sizeof(sem_name), "/%s-sem", shmem);
-#endif
 
     shm_file_t fd = shm_fd_open(fb_name, IMG_BUF_SIZE);
     if (fd == SHM_FD_INVALID) {
