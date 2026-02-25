@@ -1,0 +1,14 @@
+# Build artifacts — object files
+*.o
+
+# Linux binaries (built by make)
+phase1-test/test_frame_capture
+phase2-server/tm_stream_server
+phase3-hls/tm_stream_server
+phase3-hls/test_inject
+
+# Windows binaries (built by Makefile.Windows)
+*.exe
+
+# Downloaded single-header libraries (fetched by download-stb.sh)
+phase1-test/stb_image_write.h

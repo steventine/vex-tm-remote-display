@@ -118,7 +118,43 @@ sudo apt install build-essential libx264-dev libjpeg-turbo8-dev
 sudo apt install gcc-mingw-w64-x86-64
 ```
 
-### Build
+Then build with `make CROSS_COMPILE_WINDOWS=1` from `phase3-hls/`.
+
+### Native Windows build (MSYS2)
+
+The easiest way to build and debug natively on Windows is with [MSYS2](https://www.msys2.org/).
+
+**Important:** Always use the **MSYS2 MinGW64** shell — look for "MSYS2 MinGW x64" in the Start menu. Do **not** use the plain "MSYS2" or "MSYS2 MSYS" shells; those use a different runtime and the build will fail.
+
+**One-time setup** (run once after installing MSYS2):
+
+```bash
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-x264 \
+          mingw-w64-x86_64-libjpeg-turbo make
+```
+
+**Build:**
+
+```bash
+cd phase3-hls
+make -f Makefile.Windows
+```
+
+The Makefile auto-detects MSYS2 (via `$(OS) == Windows_NT`) and uses the right toolchain — no extra flags needed.
+
+**Debug build** (symbols, `-O0`, not stripped — useful with gdb or printf debugging):
+
+```bash
+make -f Makefile.Windows debug
+```
+
+**Troubleshooting:** If you get linker errors about glibc symbols (`__snprintf_chk`, `__errno_location`) or an x264 version mismatch, you likely have stale `.o` files from a previous cross-compiled Linux build. Fix with:
+
+```bash
+make -f Makefile.Windows clean && make -f Makefile.Windows
+```
+
+### Linux build
 
 ```bash
 cd phase3-hls
