@@ -17,6 +17,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
 #include "hls_server.h"
 #include "simple-log.h"
 
@@ -543,9 +544,10 @@ static void* server_thread_func(void* arg) {
 hls_server_t* hls_server_create(int port) {
     hls_server_t* srv = calloc(1, sizeof(hls_server_t));
     if (!srv) return NULL;
-    srv->port    = port;
-    srv->sockfd  = -1;
-    srv->running = 0;
+    srv->port     = port;
+    srv->sockfd   = -1;
+    srv->running  = 0;
+    srv->next_seq = (uint64_t)time(NULL);  // unique per server session → cache-busts old .ts URLs
     pthread_mutex_init(&srv->ring_mutex, NULL);
     return srv;
 }
