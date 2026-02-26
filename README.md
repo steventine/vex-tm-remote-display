@@ -172,6 +172,13 @@ cd phase3-hls
 # Open http://localhost:8080 — video plays within 2-3 s
 ```
 
+Most common usage:
+
+```bash
+tm_stream_server --framerate 30 --bitrate 750
+```
+Note: 750Kbps is good quality, 500Kbps is too low.
+
 ### Testing without TM hardware
 
 The `test_inject` tool writes synthetic BGRA frames into the same shared memory that TM uses, so the server can be developed and tested without a TM installation:
