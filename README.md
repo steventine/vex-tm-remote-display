@@ -179,6 +179,14 @@ tm_stream_server --framerate 30 --bitrate 750
 ```
 Note: 750Kbps is good quality, 500Kbps is too low.
 
+### Latency Notes
+
+The remote display attempts to maintain a video latency under 4 seconds.  
+
+* If the latency ever exceeds 5 seconds, the `video.playbackRate` is increaed to 1.3 speed until it returns below 4 seconds.  Also a yellow dot is visible in top right corner of the screen.
+* If the latency ever exceeds 7 seconds, the dot in the top right corner will become orange.
+* If the latency ever exceeds 8 seconds, the player will _hard seek_ (skipping frames) to return below 4 seconds.  
+
 ### Testing without TM hardware
 
 The `test_inject` tool writes synthetic BGRA frames into the same shared memory that TM uses, so the server can be developed and tested without a TM installation:

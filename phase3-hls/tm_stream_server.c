@@ -386,9 +386,9 @@ static void* frame_capture_thread(void* arg) {
 // --------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
     int         port             = 8080;
-    int         framerate        = 10;
+    int         framerate        = 30;
     int         jpeg_quality     = 85;
-    int         bitrate_kbps     = 3000;
+    int         bitrate_kbps     = 750;
     int         segment_duration = 1;
     const char* server_addr      = NULL;
     const char* password         = NULL;
@@ -428,8 +428,8 @@ int main(int argc, char* argv[]) {
             printf("Options:\n");
             printf("  --port N              HTTP port (default: 8080)\n");
             printf("  --mode MODE           Stream mode: hls (default) or mjpeg\n");
-            printf("  --framerate N         Frame rate (default: 10)\n");
-            printf("  --bitrate N           H.264 bitrate in kbps, HLS mode (default: 3000)\n");
+            printf("  --framerate N         Frame rate (default: 30)\n");
+            printf("  --bitrate N           H.264 bitrate in kbps, HLS mode (default: 750)\n");
             printf("  --segment-duration N  HLS segment duration in sec (default: 1)\n");
             printf("  --quality N           JPEG quality 1-100, MJPEG mode (default: 85)\n");
             printf("  --server ADDR         TM server address\n");
@@ -442,7 +442,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (framerate <= 0) framerate = 10;
+    if (framerate <= 0) framerate = 30;
 
 #ifdef _WIN32
     // Reduce system timer resolution to 1 ms so WaitForSingleObject timeouts are
